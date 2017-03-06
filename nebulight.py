@@ -1,6 +1,18 @@
 #! /usr/bin/env python
 # PYTHON_ARGCOMPLETE_OK
 
+"""
+NebuLight: A super light weight batch processor for arbitrary command line commands.
+(c) 2017 Philip Haeusser, haeusser@cs.tum.edu
+
+This library facilitates batch processing of a list of command line commands.
+
+Example usage:
+./nebulight.py add "echo 'OK' >> results.log"
+./nebulight.py status
+./nebulight.py start
+"""
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -13,6 +25,7 @@ import time
 import subprocess
 import argcomplete
 
+# Constants.
 QUEUED = 'queued'
 PROCESSING = 'processing'
 DONE = 'done'
@@ -41,7 +54,68 @@ def _print_not_implemented():
     print("Sorry, not implemented yet :-( Contributions are welcome!")
 
 
+def _check_for_queued_jobs(db_name):
+    conn, c = _get_or_create_db(db_name)
+    c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
+    rows = c.fetchall()
+    _commit_and_close(conn, c)
+    return len(rows)
+
+
+def _pull_and_process(args):
+    conn, c = _get_or_create_db(args.db_name)
+    c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
+    try:
+        (id, cmd, stat, tries) = c.fetchone()
+    except Exception as e:
+        print("Couldn't pull any new jobs." + e.message)
+        _commit_and_close(conn, c)
+        return
+
+    if tries >= args.max_failures:
+        print("This job has failed.")
+        conn, c = _get_or_create_db(args.db_name)
+        c.execute("UPDATE jobs SET status=? WHERE job_id=?", (FAILED, id))
+        _commit_and_close(conn, c)
+        return
+
+    c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
+    c.execute("UPDATE jobs SET status=?, tries=? WHERE job_id=?", (PROCESSING, tries + 1, id))
+    _commit_and_close(conn, c)
+
+    print("Try {}/{} of job #{}: {}".format(tries + 1, args.max_failures, id, cmd))
+    if args.gpu is not None:
+        _set_gpu(args)
+
+    rc = 1
+    try:
+        child = subprocess.Popen([cmd], shell=True, stdout=subprocess.PIPE)
+        streamdata = child.communicate()[0]
+        rc = child.returncode
+
+        if rc == 0:
+            conn, c = _get_or_create_db(args.db_name)
+            c.execute("UPDATE jobs SET status=? WHERE job_id=?", (DONE, id))
+            _commit_and_close(conn, c)
+            print('Job done. Process ended with return code', rc)
+            return
+    except OSError as e:
+        print(e)
+
+    print('Job failed. Process ended with return code', rc)
+    conn, c = _get_or_create_db(args.db_name)
+    c.execute("UPDATE jobs SET status=? WHERE job_id=?", (QUEUED, id))
+    _commit_and_close(conn, c)
+
+
 def add(args):
+    """
+    Adds one job from the command line.
+    :param args: An argparse object containing the following properties:
+            job: A string containing a command line command.
+            db_name: A string containing the database filename.
+    :return: Nothing
+    """
     job = args.job
     print('Adding', job)
     conn, c = _get_or_create_db(args.db_name)
@@ -50,6 +124,13 @@ def add(args):
 
 
 def add_list(args):
+    """
+    Adds a number of jobs from an external text file. The file must contain one command per line.
+    :param args: An argparse object containing the following properties:
+            joblist: A string containing a valid path to a text file.
+            db_name: A string containing a filename for the database.
+    :return: Nothing.
+    """
     joblist = args.joblist
     print('Adding jobs from', joblist)
 
@@ -70,6 +151,12 @@ def add_list(args):
 
 
 def status(args):
+    """
+    Prints the current status of the database.
+    :param args: An argparse object containing the following properties:
+            db_name: A string containing a filename for the database.
+    :return: Nothing.
+    """
     MAX_LEN_JOBNAME = 40
 
     if not os.path.exists(args.db_name):
@@ -108,63 +195,14 @@ def status(args):
     _commit_and_close(conn, c)
 
 
-def _check_for_queued_jobs(db_name):
-    conn, c = _get_or_create_db(db_name)
-    c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
-    rows = c.fetchall()
-    _commit_and_close(conn, c)
-    return len(rows)
-
-
-def _pull_and_process(args):
-    conn, c = _get_or_create_db(args.db_name)
-    c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
-    try:
-        (id, cmd, stat, tries) = c.fetchone()
-    except Exception as e:
-        print("Couldn't pull any new jobs." + e.message)
-        _commit_and_close(conn, c)
-        return
-
-    if tries >= args.max_failures:
-        print("This job has failed.")
-        conn, c = _get_or_create_db(args.db_name)
-        c.execute("UPDATE jobs SET status=? WHERE job_id=?", (FAILED, id))
-        _commit_and_close(conn, c)
-        return
-
-    c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
-    c.execute("UPDATE jobs SET status=?, tries=? WHERE job_id=?", (PROCESSING, tries + 1, id))
-    _commit_and_close(conn, c)
-
-    print("Try {}/{} of job #{}: {}".format(tries + 1, args.max_failures, id, cmd))
-    if args.gpu is not None:
-        set_gpu(args)
-
-    rc = 1
-    try:
-        child = subprocess.Popen([cmd], shell=True, stdout=subprocess.PIPE)
-        streamdata = child.communicate()[0]
-        rc = child.returncode
-
-        if rc == 0:
-            conn, c = _get_or_create_db(args.db_name)
-            c.execute("UPDATE jobs SET status=? WHERE job_id=?", (DONE, id))
-            _commit_and_close(conn, c)
-            print('Job done. Process ended with return code', rc)
-            return
-    except OSError as e:
-        print(e)
-
-    print('Job failed. Process ended with return code', rc)
-    conn, c = _get_or_create_db(args.db_name)
-    c.execute("UPDATE jobs SET status=? WHERE job_id=?", (QUEUED, id))
-    _commit_and_close(conn, c)
-
-
-
 def start(args):
-    print('Starting ...')
+    """
+    Start the processing loop.
+    :param args: An argparse object containing the following properties:
+            db_name: A string containing a filename for the database.
+            max_idle_minutes: Number of minutes to idle before quitting the processing loop.
+    :return: Nothing.
+    """
     assert os.path.exists(args.db_name), "No joblist found in {}. Please start with adding jobs.".format(args.db_name)
 
     num_queued = _check_for_queued_jobs(args.db_name)
@@ -185,6 +223,12 @@ def start(args):
 
 
 def reset(args):
+    """
+    Set the status of all jobs in the database to 'queued'.
+    :param args: An argparse object containing the following properties:
+            db_name: A string containing a filename for the database.
+    :return: Nothing.
+    """
     status(args)
     confirm = raw_input("Are you sure that you want to reset the status of all jobs? Enter 'yes': ")
     if confirm.lower() == 'yes':
@@ -198,7 +242,7 @@ def remove(args):
     _print_not_implemented()
 
 
-def set_gpu(args):
+def _set_gpu(args):
     print(args)
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_id
     print('Set CUDA_VISIBLE_DEVICES to', str(os.environ['CUDA_VISIBLE_DEVICES']))
@@ -206,22 +250,22 @@ def set_gpu(args):
 
 if __name__ == '__main__':
     options_parser = argparse.ArgumentParser(prog="Options", add_help=False)
-    options_parser.add_argument("--db_name", help="Choose a specific name for the job database.",
+    options_parser.add_argument("--db_name", help="Choose a specific name for the job database. Default: joblist.sqlite3",
                                 default="joblist.sqlite3")
 
     parser = argparse.ArgumentParser(prog="NebuLight")
     subparsers = parser.add_subparsers(title="Actions")
 
-    sp = subparsers.add_parser("add", help="Add a single job to the queue.", parents=[options_parser])
+    sp = subparsers.add_parser("add", help="Add a single job from the command line to the queue.", parents=[options_parser])
     sp.set_defaults(func=add)
     sp.add_argument('job', help='Command to execute.')
 
-    sp = subparsers.add_parser("add_list", help="Add a list of jobs from a file to the queue.",
+    sp = subparsers.add_parser("add_list", help="Add a list of jobs (one per line) from a file to the queue.",
                                parents=[options_parser])
     sp.set_defaults(func=add_list)
     sp.add_argument('joblist', help='File containing commands to execute.')
 
-    sp = subparsers.add_parser("status", help="Print the current status.", parents=[options_parser])
+    sp = subparsers.add_parser("status", help="Print the current job status.", parents=[options_parser])
     sp.set_defaults(func=status)
 
     sp = subparsers.add_parser("start", help="Start a worker instance locally.", parents=[options_parser])
