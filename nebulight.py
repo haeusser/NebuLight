@@ -20,11 +20,12 @@ from __future__ import print_function
 import argparse
 import datetime
 import os
-import sqlite3 as sql
-import time
-import subprocess
 import shlex
+import sqlite3 as sql
+import subprocess
 import sys
+import time
+
 import argcomplete
 
 # Constants.
@@ -117,6 +118,36 @@ def _pull_and_process(args):
     _commit_and_close(conn, c)
 
 
+def _change_status(args, mode):
+    status(args)
+
+    selector = []
+    if args.all:
+        selector += ALL
+    elif args.done:
+        selector += [DONE]
+    elif args.failed:
+        selector += [FAILED]
+    elif args.hold:
+        selector += [HOLD]
+    elif args.processing:
+        selector += [PROCESSING]
+    elif args.queued:
+        selector += [QUEUED]
+    else:
+        selector += ALL
+
+    selector = "('" + "','".join(selector) + "')"
+
+    confirm = raw_input("Are you sure that you want to set the status of all {} jobs to {}? Enter 'yes': ".format(selector, mode))
+    if confirm.lower() == 'yes':
+        conn, c = _get_or_create_db(args.db_name)
+        sql_cmd = "UPDATE jobs SET status='{}', tries={} WHERE status IN {}".format(mode, 0, selector)
+        c.execute(sql_cmd)
+        _commit_and_close(conn, c)
+        print("All {} jobs set to {}.".format(selector, mode))
+
+
 def add(args):
     """
     Adds one job from the command line.
@@ -179,10 +210,9 @@ def status(args):
 
     spacing = min(max(len(x[1]) for x in rows) + 5, MAX_LEN_JOBNAME + 6)
 
-    num_queued = sum(1 for (_, _, stat, _) in rows if stat == QUEUED)
-    num_processing = sum(1 for (_, _, stat, _) in rows if stat == PROCESSING)
-    num_done = sum(1 for (_, _, stat, _) in rows if stat == DONE)
-    num_failed = sum(1 for (_, _, stat, _) in rows if stat == FAILED)
+    stats = dict()
+    for s in ALL:
+        stats[s] = sum(1 for (_, _, stat, _) in rows if stat == s)
 
     str_template = "{:<5}{:<" + str(spacing) + "}{:<13}{}"
 
@@ -195,10 +225,8 @@ def status(args):
         cmd = ('...' + cmd[-MAX_LEN_JOBNAME:]) if len(cmd) > MAX_LEN_JOBNAME else cmd
         print(str_template.format(id, cmd, stat, tries))
     print("-" * (spacing + 26))
-    print("{:<3} queued".format(num_queued))
-    print("{:<3} processing".format(num_processing))
-    print("{:<3} done".format(num_done))
-    print("{:<3} failed".format(num_failed))
+    for s in ALL:
+        print("{:<3} {}".format(stats[s], s))
     print()
 
     _commit_and_close(conn, c)
@@ -231,37 +259,34 @@ def start(args):
         num_queued = _check_for_queued_jobs(args.db_name)
 
 
-def reset(args):
+def queue(args):
     """
-    Set the status of all jobs in the database to 'queued'.
+    Set the status of all specified jobs in the database to 'queued'.
     :param args: An argparse object containing the following properties:
             db_name: A string containing a filename for the database.
+            optional any of these flags as filters:
+                    --done
+                    --processing
+                    --failed
+                    --hold
     :return: Nothing.
     """
-    status(args)
-    confirm = raw_input("Are you sure that you want to reset the status of all jobs? Enter 'yes': ")
-    if confirm.lower() == 'yes':
-        selector = []
-        if args.all:
-            selector += ALL
-        elif args.done:
-            selector += [DONE]
-        elif args.failed:
-            selector += [FAILED]
-        elif args.hold:
-            selector += [HOLD]
-        elif args.processing:
-            selector += [PROCESSING]
-        else:
-            selector += ALL
+    _change_status(args, QUEUED)
 
-        selector = "('" + "','".join(selector) + "')"
 
-        conn, c = _get_or_create_db(args.db_name)
-        sql_cmd = "UPDATE jobs SET status='{}', tries={} WHERE status IN {}".format(QUEUED, 0, selector)
-        c.execute(sql_cmd)
-        _commit_and_close(conn, c)
-        print("All {} jobs reset.".format(selector))
+def hold(args):
+    """
+    Set the status of all specified jobs in the database to 'hold'.
+    :param args: An argparse object containing the following properties:
+            db_name: A string containing a filename for the database.
+            optional any of these flags as filters:
+                    --done
+                    --processing
+                    --failed
+                    --hold
+    :return: Nothing.
+    """
+    _change_status(args, HOLD)
 
 
 def remove(args):
@@ -275,13 +300,15 @@ def _set_gpu(args):
 
 if __name__ == '__main__':
     options_parser = argparse.ArgumentParser(prog="Options", add_help=False)
-    options_parser.add_argument("--db_name", help="Choose a specific name for the job database. Default: joblist.sqlite3",
+    options_parser.add_argument("--db_name",
+                                help="Choose a specific name for the job database. Default: joblist.sqlite3",
                                 default="joblist.sqlite3")
 
     parser = argparse.ArgumentParser(prog="NebuLight")
     subparsers = parser.add_subparsers(title="Actions")
 
-    sp = subparsers.add_parser("add", help="Add a single job from the command line to the queue.", parents=[options_parser])
+    sp = subparsers.add_parser("add", help="Add a single job from the command line to the queue.",
+                               parents=[options_parser])
     sp.set_defaults(func=add)
     sp.add_argument('job', help='Command to execute.')
 
@@ -303,17 +330,25 @@ if __name__ == '__main__':
     sp = subparsers.add_parser("remove", help="Remove a specific job.", parents=[options_parser])
     sp.set_defaults(func=remove)
 
-    sp = subparsers.add_parser("reset", help="Set all jobs to 'queued'.", parents=[options_parser])
-    sp.add_argument("--all", help="Reset all jobs to status 'queued'.", action='store_true')
-    sp.add_argument("--done", help="Reset all done jobs to status 'queued'.", action='store_true')
-    sp.add_argument("--failed", help="Reset all failed jobs to status 'queued'.", action='store_true')
-    sp.add_argument("--hold", help="Reset all held jobs to status 'queued'.", action='store_true')
-    sp.add_argument("--processing", help="Reset all processing jobs to status 'queued'.", action='store_true')
+    sp = subparsers.add_parser("queue", help="Set all jobs to 'queued'.", parents=[options_parser])
+    sp.add_argument("--all", help="Re-enqueue all jobs to status 'queued'.", action='store_true')
+    sp.add_argument("--done", help="Re-enqueue all done jobs to status 'queued'.", action='store_true')
+    sp.add_argument("--failed", help="Re-enqueue all failed jobs to status 'queued'.", action='store_true')
+    sp.add_argument("--hold", help="Re-enqueue all held jobs to status 'queued'.", action='store_true')
+    sp.add_argument("--processing", help="Re-enqueue all processing jobs to status 'queued'.", action='store_true')
+    sp.set_defaults(func=queue)
 
-    sp.set_defaults(func=reset)
+    sp = subparsers.add_parser("hold", help="Set all jobs to 'hold'.", parents=[options_parser])
+    sp.add_argument("--all", help="Set all jobs to status 'hold'.", action='store_true')
+    sp.add_argument("--done", help="Set all done jobs to status 'hold'.", action='store_true')
+    sp.add_argument("--failed", help="Set all failed jobs to status 'hold'.", action='store_true')
+    sp.add_argument("--hold", help="Set all held jobs to status 'hold'.", action='store_true')
+    sp.add_argument("--processing", help="Set all processing jobs to status 'hold'.", action='store_true')
+    sp.add_argument("--queued", help="Set all queued jobs to status 'hold'.", action='store_true')
+    sp.set_defaults(func=hold)
 
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
-    print('Executing stuff in',  os.path.dirname(sys.argv[0]))
+    print('Executing stuff in', os.path.dirname(sys.argv[0]))
     args.func(args)
