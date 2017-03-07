@@ -89,8 +89,6 @@ def _pull_and_process(args):
     _commit_and_close(conn, c)
 
     print("Try {}/{} of job #{}: {}".format(tries + 1, args.max_failures, id, cmd))
-    if args.gpu is not None:
-        _set_gpu(args)
 
     rc = 1
     try:
@@ -139,13 +137,38 @@ def _change_status(args, mode):
 
     selector = "('" + "','".join(selector) + "')"
 
-    confirm = raw_input("Are you sure that you want to set the status of all {} jobs to {}? Enter 'yes': ".format(selector, mode))
+    confirm = raw_input(
+        "Are you sure that you want to set the status of all {} jobs to {}? Enter 'yes': ".format(selector, mode))
     if confirm.lower() == 'yes':
         conn, c = _get_or_create_db(args.db_name)
         sql_cmd = "UPDATE jobs SET status='{}', tries={} WHERE status IN {}".format(mode, 0, selector)
         c.execute(sql_cmd)
         _commit_and_close(conn, c)
         print("All {} jobs set to {}.".format(selector, mode))
+
+    status(args)
+
+
+def _query_gpu():
+    cmd_smi = 'nvidia-smi'
+    subprocess.call(cmd_smi.split())
+
+    gpu_id = _get_user_input("\nWhich GPU should be used? [0]", '0', [str(x) for x in range(10)])
+
+    os.environ['CUDA_VISIBLE_DEVICES'] = gpu_id
+    print('Set CUDA_VISIBLE_DEVICES to', str(os.environ['CUDA_VISIBLE_DEVICES']))
+
+
+def _get_user_input(prompt, default, valid_values):
+    while True:
+        sys.stdout.write(prompt + '  ')
+        choice = raw_input().lower()
+        if default is not None and choice == '':
+            return default
+        elif choice in valid_values:
+            return choice
+        else:
+            sys.stdout.write("Invalid value.")
 
 
 def add(args):
@@ -242,6 +265,8 @@ def start(args):
     """
     assert os.path.exists(args.db_name), "No joblist found in {}. Please start with adding jobs.".format(args.db_name)
 
+    _query_gpu()
+
     num_queued = _check_for_queued_jobs(args.db_name)
     begin_idle_time = datetime.datetime.now()
     end_idle_time = begin_idle_time + datetime.timedelta(seconds=args.max_idle_minutes * 60)
@@ -291,11 +316,6 @@ def hold(args):
 
 def remove(args):
     _print_not_implemented()
-
-
-def _set_gpu(args):
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
-    print('Set CUDA_VISIBLE_DEVICES to', str(os.environ['CUDA_VISIBLE_DEVICES']))
 
 
 if __name__ == '__main__':
