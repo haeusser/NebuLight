@@ -175,14 +175,14 @@ def status(args):
     c.execute('SELECT * FROM jobs ORDER BY status')
     rows = c.fetchall()
 
-    spacing = min(max(len(x[1]) for x in rows) + 5, MAX_LEN_JOBNAME + 4)
+    spacing = min(max(len(x[1]) for x in rows) + 5, MAX_LEN_JOBNAME + 6)
 
     num_queued = sum(1 for (_, _, stat, _) in rows if stat == QUEUED)
     num_processing = sum(1 for (_, _, stat, _) in rows if stat == PROCESSING)
     num_done = sum(1 for (_, _, stat, _) in rows if stat == DONE)
     num_failed = sum(1 for (_, _, stat, _) in rows if stat == FAILED)
 
-    str_template = "{:<5}{:<" + str(spacing) + "}{:<15}{}"
+    str_template = "{:<5}{:<" + str(spacing) + "}{:<13}{}"
 
     print()
     print(str_template.format("ID", "COMMAND", "STATUS", "TRIES"))
@@ -190,7 +190,7 @@ def status(args):
 
     for row in rows:
         (id, cmd, stat, tries) = row
-        cmd = (cmd[:MAX_LEN_JOBNAME] + '...') if len(cmd) > MAX_LEN_JOBNAME else cmd
+        cmd = ('...' + cmd[-MAX_LEN_JOBNAME:]) if len(cmd) > MAX_LEN_JOBNAME else cmd
         print(str_template.format(id, cmd, stat, tries))
     print("-" * (spacing + 26))
     print("{:<3} queued".format(num_queued))
