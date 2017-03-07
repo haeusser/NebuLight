@@ -23,6 +23,8 @@ import os
 import sqlite3 as sql
 import time
 import subprocess
+import shlex
+import sys
 import argcomplete
 
 # Constants.
@@ -89,9 +91,14 @@ def _pull_and_process(args):
 
     rc = 1
     try:
-        child = subprocess.Popen([cmd], shell=True, stdout=subprocess.PIPE)
-        streamdata = child.communicate()[0]
-        rc = child.returncode
+        proc = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        while True:
+            output = proc.stdout.readline()
+            if output == '' and proc.poll() is not None:
+                break
+            if output:
+                print('NL>> ' + output.strip())
+        rc = proc.poll()
 
         if rc == 0:
             conn, c = _get_or_create_db(args.db_name)
@@ -243,8 +250,7 @@ def remove(args):
 
 
 def _set_gpu(args):
-    print(args)
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_id
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     print('Set CUDA_VISIBLE_DEVICES to', str(os.environ['CUDA_VISIBLE_DEVICES']))
 
 
@@ -283,4 +289,6 @@ if __name__ == '__main__':
 
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
+
+    print('Executing stuff in',  os.path.dirname(sys.argv[0]))
     args.func(args)
