@@ -32,6 +32,8 @@ QUEUED = 'queued'
 PROCESSING = 'processing'
 DONE = 'done'
 FAILED = 'failed'
+HOLD = 'hold'
+ALL = [QUEUED, PROCESSING, DONE, FAILED, HOLD]
 IDLE_CHECK_INTERVAL_MIN = 0.1
 
 
@@ -239,10 +241,27 @@ def reset(args):
     status(args)
     confirm = raw_input("Are you sure that you want to reset the status of all jobs? Enter 'yes': ")
     if confirm.lower() == 'yes':
+        selector = []
+        if args.all:
+            selector += ALL
+        elif args.done:
+            selector += [DONE]
+        elif args.failed:
+            selector += [FAILED]
+        elif args.hold:
+            selector += [HOLD]
+        elif args.processing:
+            selector += [PROCESSING]
+        else:
+            selector += ALL
+
+        selector = "('" + "','".join(selector) + "')"
+
         conn, c = _get_or_create_db(args.db_name)
-        c.execute("UPDATE jobs SET status=?, tries=?", (QUEUED, 0))
+        sql_cmd = "UPDATE jobs SET status='{}', tries={} WHERE status IN {}".format(QUEUED, 0, selector)
+        c.execute(sql_cmd)
         _commit_and_close(conn, c)
-        print("All jobs reset.")
+        print("All {} jobs reset.".format(selector))
 
 
 def remove(args):
@@ -285,6 +304,12 @@ if __name__ == '__main__':
     sp.set_defaults(func=remove)
 
     sp = subparsers.add_parser("reset", help="Set all jobs to 'queued'.", parents=[options_parser])
+    sp.add_argument("--all", help="Reset all jobs to status 'queued'.", action='store_true')
+    sp.add_argument("--done", help="Reset all done jobs to status 'queued'.", action='store_true')
+    sp.add_argument("--failed", help="Reset all failed jobs to status 'queued'.", action='store_true')
+    sp.add_argument("--hold", help="Reset all held jobs to status 'queued'.", action='store_true')
+    sp.add_argument("--processing", help="Reset all processing jobs to status 'queued'.", action='store_true')
+
     sp.set_defaults(func=reset)
 
     argcomplete.autocomplete(parser)
