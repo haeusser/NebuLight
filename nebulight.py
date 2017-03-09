@@ -39,14 +39,18 @@ ALL = [QUEUED, PROCESSING, DONE, FAILED, HOLD]
 IDLE_CHECK_INTERVAL_MIN = 0.1
 
 
+def _time_str():
+    return datetime.datetime.now().strftime("%d.%m %H:%M")
+
+
 def _add_single_job(cursor, cmd, status):
-    cursor.execute("insert into jobs(cmd, status, tries) values (?, ?, ?)", (cmd, status, 0))
+    cursor.execute("insert into jobs(cmd, status, tries, host, time) values (?, ?, ?, ?, ?)", (cmd, status, 0, '', _time_str()))
 
 
 def _get_or_create_db(db_name):
     conn = sql.connect(db_name)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS jobs (job_id INTEGER PRIMARY KEY, cmd, status, tries, host);''')
+    c.execute('''CREATE TABLE IF NOT EXISTS jobs (job_id INTEGER PRIMARY KEY, cmd, status, tries, host, time);''')
     return conn, c
 
 
@@ -71,12 +75,21 @@ def _check_for_queued_jobs(db_name):
 def _host():
     return socket.gethostname()
 
+def _update_str(sets, where='job_id'):
+    if not type(sets) == list:
+        sets = [sets]
+    time_str = _time_str()
+    sets_str = "=?, ".join(sets)
+    sets_str += "=?, time='{}'".format(time_str)
+
+    return "UPDATE jobs SET {} WHERE {}=?".format(sets_str, where)
+
 
 def _pull_and_process(args, gpu_id=''):
     conn, c = _get_or_create_db(args.db_name)
     c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
     try:
-        (id, cmd, stat, tries, _) = c.fetchone()
+        (id, cmd, stat, tries, _, _) = c.fetchone()
     except Exception as e:
         print("Couldn't pull any new jobs." + e.message)
         _commit_and_close(conn, c)
@@ -85,14 +98,16 @@ def _pull_and_process(args, gpu_id=''):
     if tries >= args.max_failures:
         print("This job has failed.")
         conn, c = _get_or_create_db(args.db_name)
-        c.execute("UPDATE jobs SET status=? WHERE job_id=?", (FAILED, id))
+        update_str = _update_str('status')
+        c.execute(update_str, (FAILED, id))
         _commit_and_close(conn, c)
         return
 
     host = "{}:{}".format(_host(), gpu_id)
 
     c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
-    c.execute("UPDATE jobs SET status=?, tries=?, host=? WHERE job_id=?", (PROCESSING, tries + 1, host, id))
+    update_str = _update_str(['status', 'tries', 'host'])
+    c.execute(update_str, (PROCESSING, tries + 1, host, id))
     _commit_and_close(conn, c)
 
     print("Trying {}/{} of job #{}: {}".format(tries + 1, args.max_failures, id, cmd))
@@ -110,7 +125,8 @@ def _pull_and_process(args, gpu_id=''):
 
         if rc == 0:
             conn, c = _get_or_create_db(args.db_name)
-            c.execute("UPDATE jobs SET status=? WHERE job_id=?", (DONE, id))
+            update_str = _update_str(['status'])
+            c.execute(update_str, (DONE, id))
             _commit_and_close(conn, c)
             print('Job done. Process ended with return code', rc)
             return
@@ -119,7 +135,8 @@ def _pull_and_process(args, gpu_id=''):
 
     print('Job failed. Process ended with return code', rc)
     conn, c = _get_or_create_db(args.db_name)
-    c.execute("UPDATE jobs SET status=? WHERE job_id=?", (QUEUED, id))
+    update_str = _update_str('status')
+    c.execute(update_str, (QUEUED, id))
     _commit_and_close(conn, c)
 
 
@@ -148,7 +165,7 @@ def _change_status(args, mode):
         "Are you sure that you want to set the status of all {} jobs to {}? Enter 'yes': ".format(selector, mode))
     if confirm.lower() == 'yes':
         conn, c = _get_or_create_db(args.db_name)
-        sql_cmd = "UPDATE jobs SET status='{}', tries={} WHERE status IN {}".format(mode, 0, selector)
+        sql_cmd = "UPDATE jobs SET status='{}', tries={}, time='{}' WHERE status IN {}".format(mode, 0, _time_str(), selector)
         c.execute(sql_cmd)
         _commit_and_close(conn, c)
         print("All {} jobs set to {}.".format(selector, mode))
@@ -229,7 +246,7 @@ def status(args):
             db_name: A string containing a filename for the database.
     :return: Nothing.
     """
-    MAX_LEN_JOBNAME = 100
+    MAX_LEN_JOBNAME = 91
 
     if not os.path.exists(args.db_name):
         print("No job queue. Start by adding jobs.")
@@ -248,23 +265,29 @@ def status(args):
         stats[s] = sum(1 for x in rows if x[2] == s)
 
     len_cmd = min(max(len(x[1]) for x in rows) + 5, MAX_LEN_JOBNAME + 6)
-    len_host = min(max(len(x[4]) for x in rows), MAX_LEN_JOBNAME + 6)
-    str_template = "{:<5}{:<" + str(len_cmd) + "}{:<13}{:<7}{:<" + str(len_host) + "}"
+    # TODO(haeusser) remove fallback
+    if len(cols) == 6:
+        len_host = min(max([4] + [len(x[4]) for x in rows]), MAX_LEN_JOBNAME + 6) + 2
+    else:
+        len_host = 5
+    str_template = "{:<5}{:<" + str(len_cmd) + "}{:<13}{:<7}{:<" + str(len_host) + "}{:<11}"
 
     print()
-    header = str_template.format("ID", "COMMAND", "STATUS", "TRIES", "HOST")
+    header = str_template.format("ID", "COMMAND", "STATUS", "TRIES", "HOST", "CHANGED")
     print(header)
     print("-" * len(header))
 
     for row in rows:
-        if len(cols) == 5:
-            (id, cmd, stat, tries, host) = row
+        # TODO(haeusser) remove fallback
+        if len(cols) == 6:
+            (id, cmd, stat, tries, host, changed) = row
         else:
-            (id, cmd, stat, tries,) = row
-            host = 'DEPR.TBL'
+            (id, cmd, stat, tries) = row
+            host = 'N/A'
+            changed = 'N/A'
         host = host or ''
         cmd = ('...' + cmd[-MAX_LEN_JOBNAME:]) if len(cmd) > MAX_LEN_JOBNAME else cmd
-        print(str_template.format(id, cmd, stat, tries, host))
+        print(str_template.format(id, cmd, stat, tries, host, changed))
     print("-" * len(header))
     for s in ALL:
         print("{:<3} {}".format(stats[s], s))
