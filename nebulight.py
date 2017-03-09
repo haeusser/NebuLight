@@ -21,6 +21,7 @@ import argparse
 import datetime
 import os
 import shlex
+import socket
 import sqlite3 as sql
 import subprocess
 import sys
@@ -45,7 +46,7 @@ def _add_single_job(cursor, cmd, status):
 def _get_or_create_db(db_name):
     conn = sql.connect(db_name)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS jobs (job_id INTEGER PRIMARY KEY, cmd, status, tries);''')
+    c.execute('''CREATE TABLE IF NOT EXISTS jobs (job_id INTEGER PRIMARY KEY, cmd, status, tries, host);''')
     return conn, c
 
 
@@ -61,17 +62,21 @@ def _print_not_implemented():
 
 def _check_for_queued_jobs(db_name):
     conn, c = _get_or_create_db(db_name)
-    c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
+    c.execute("SELECT * FROM jobs WHERE status=?", (QUEUED,))
     rows = c.fetchall()
     _commit_and_close(conn, c)
     return len(rows)
 
 
-def _pull_and_process(args):
+def _host():
+    return socket.gethostname()
+
+
+def _pull_and_process(args, gpu_id=''):
     conn, c = _get_or_create_db(args.db_name)
     c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
     try:
-        (id, cmd, stat, tries) = c.fetchone()
+        (id, cmd, stat, tries, _) = c.fetchone()
     except Exception as e:
         print("Couldn't pull any new jobs." + e.message)
         _commit_and_close(conn, c)
@@ -84,11 +89,13 @@ def _pull_and_process(args):
         _commit_and_close(conn, c)
         return
 
+    host = "{}:{}".format(_host(), gpu_id)
+
     c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
-    c.execute("UPDATE jobs SET status=?, tries=? WHERE job_id=?", (PROCESSING, tries + 1, id))
+    c.execute("UPDATE jobs SET status=?, tries=?, host=? WHERE job_id=?", (PROCESSING, tries + 1, host, id))
     _commit_and_close(conn, c)
 
-    print("Try {}/{} of job #{}: {}".format(tries + 1, args.max_failures, id, cmd))
+    print("Trying {}/{} of job #{}: {}".format(tries + 1, args.max_failures, id, cmd))
 
     rc = 1
     try:
@@ -153,19 +160,21 @@ def _query_gpu():
     cmd_smi = 'nvidia-smi'
     subprocess.call(cmd_smi.split())
 
-    gpu_id = _get_user_input("\nWhich GPU should be used? [0]", '0', [str(x) for x in range(10)])
+    gpu_id = _get_user_input("\nWhich GPU should be used? [0]", '0')  # , [str(x) for x in range(10)])
 
     os.environ['CUDA_VISIBLE_DEVICES'] = gpu_id
     print('Set CUDA_VISIBLE_DEVICES to', str(os.environ['CUDA_VISIBLE_DEVICES']))
 
+    return gpu_id
 
-def _get_user_input(prompt, default, valid_values):
+
+def _get_user_input(prompt, default, valid_values=None):
     while True:
         sys.stdout.write(prompt + '  ')
         choice = raw_input().lower()
         if default is not None and choice == '':
             return default
-        elif choice in valid_values:
+        elif valid_values is None or choice in valid_values:
             return choice
         else:
             sys.stdout.write("Invalid value.")
@@ -220,7 +229,7 @@ def status(args):
             db_name: A string containing a filename for the database.
     :return: Nothing.
     """
-    MAX_LEN_JOBNAME = 40
+    MAX_LEN_JOBNAME = 100
 
     if not os.path.exists(args.db_name):
         print("No job queue. Start by adding jobs.")
@@ -231,23 +240,32 @@ def status(args):
     c.execute('SELECT * FROM jobs ORDER BY status')
     rows = c.fetchall()
 
-    spacing = min(max(len(x[1]) for x in rows) + 5, MAX_LEN_JOBNAME + 6)
+    c.execute("PRAGMA table_info(jobs)")
+    cols = c.fetchall()
 
     stats = dict()
     for s in ALL:
-        stats[s] = sum(1 for (_, _, stat, _) in rows if stat == s)
+        stats[s] = sum(1 for x in rows if x[2] == s)
 
-    str_template = "{:<5}{:<" + str(spacing) + "}{:<13}{}"
+    len_cmd = min(max(len(x[1]) for x in rows) + 5, MAX_LEN_JOBNAME + 6)
+    len_host = min(max(len(x[4]) for x in rows), MAX_LEN_JOBNAME + 6)
+    str_template = "{:<5}{:<" + str(len_cmd) + "}{:<13}{:<7}{:<" + str(len_host) + "}"
 
     print()
-    print(str_template.format("ID", "COMMAND", "STATUS", "TRIES"))
-    print("-" * (spacing + 26))
+    header = str_template.format("ID", "COMMAND", "STATUS", "TRIES", "HOST")
+    print(header)
+    print("-" * len(header))
 
     for row in rows:
-        (id, cmd, stat, tries) = row
+        if len(cols) == 5:
+            (id, cmd, stat, tries, host) = row
+        else:
+            (id, cmd, stat, tries,) = row
+            host = 'DEPR.TBL'
+        host = host or ''
         cmd = ('...' + cmd[-MAX_LEN_JOBNAME:]) if len(cmd) > MAX_LEN_JOBNAME else cmd
-        print(str_template.format(id, cmd, stat, tries))
-    print("-" * (spacing + 26))
+        print(str_template.format(id, cmd, stat, tries, host))
+    print("-" * len(header))
     for s in ALL:
         print("{:<3} {}".format(stats[s], s))
     print()
@@ -265,7 +283,7 @@ def start(args):
     """
     assert os.path.exists(args.db_name), "No joblist found in {}. Please start with adding jobs.".format(args.db_name)
 
-    _query_gpu()
+    gpu_id = _query_gpu()
 
     num_queued = _check_for_queued_jobs(args.db_name)
     begin_idle_time = datetime.datetime.now()
@@ -273,7 +291,7 @@ def start(args):
 
     while num_queued > 0 or datetime.datetime.now() < end_idle_time:
         if num_queued > 0:
-            _pull_and_process(args)
+            _pull_and_process(args, gpu_id)
             begin_idle_time = datetime.datetime.now()
             end_idle_time = begin_idle_time + datetime.timedelta(seconds=args.max_idle_minutes * 60)
         else:
