@@ -163,7 +163,8 @@ def _change_status(args, mode):
 
     selector = "('" + "','".join(selector) + "')"
 
-    if _get_user_confirmation("Are you sure that you want to set the status of all {} jobs to {}?".format(selector, mode)):
+    if _get_user_confirmation(
+            "Are you sure that you want to set the status of all {} jobs to {}?".format(selector, mode)):
         conn, c = _get_or_create_db(args.db_name)
         sql_cmd = "UPDATE jobs SET status='{}', tries={}, time='{}' WHERE status IN {}".format(mode, 0, _time_str(),
                                                                                                selector)
@@ -205,6 +206,47 @@ def _get_user_confirmation(query="Are you sure?"):
     except KeyboardInterrupt:
         print("\nNothing happened.")
     return confirm.lower() == 'yes'
+
+
+def _print_table(cols, rows, print_status=True):
+    max_len_jobname = 91
+
+    if print_status:
+        stats = dict()
+        for s in ALL:
+            stats[s] = sum(1 for x in rows if x[2] == s)
+
+    len_cmd = min(max(len(x[1]) for x in rows) + 5, max_len_jobname + 6)
+    # TODO(haeusser) remove fallback
+    if len(cols) == 6:
+        len_host = min(max([4] + [len(x[4]) for x in rows]), max_len_jobname + 6) + 2
+    else:
+        len_host = 5
+    str_template = "{:<5}{:<" + str(len_cmd) + "}{:<13}{:<7}{:<" + str(len_host) + "}{:<11}"
+
+    print()
+    header = str_template.format("ID", "COMMAND", "STATUS", "TRIES", "HOST:GPU:PID", "CHANGED")
+    print(header)
+    print("-" * len(header))
+
+    for row in rows:
+        # TODO(haeusser) remove fallback
+        if len(cols) == 6:
+            (id, cmd, stat, tries, host, changed) = row
+        else:
+            (id, cmd, stat, tries) = row
+            host = 'N/A'
+            changed = 'N/A'
+        host = host or ''
+        cmd = ('...' + cmd[-max_len_jobname:]) if len(cmd) > max_len_jobname else cmd
+        print(str_template.format(id, cmd, stat, tries, host, changed))
+    print("-" * len(header))
+
+    if print_status:
+        for s in ALL:
+            print("{:<3} {}".format(stats[s], s))
+    print()
+
 
 def add(args):
     """
@@ -273,46 +315,6 @@ def status(args):
     _commit_and_close(conn, c)
 
     _print_table(cols, rows)
-
-
-def _print_table(cols, rows, print_status=True):
-    max_len_jobname = 91
-
-    if print_status:
-        stats = dict()
-        for s in ALL:
-            stats[s] = sum(1 for x in rows if x[2] == s)
-
-    len_cmd = min(max(len(x[1]) for x in rows) + 5, max_len_jobname + 6)
-    # TODO(haeusser) remove fallback
-    if len(cols) == 6:
-        len_host = min(max([4] + [len(x[4]) for x in rows]), max_len_jobname + 6) + 2
-    else:
-        len_host = 5
-    str_template = "{:<5}{:<" + str(len_cmd) + "}{:<13}{:<7}{:<" + str(len_host) + "}{:<11}"
-
-    print()
-    header = str_template.format("ID", "COMMAND", "STATUS", "TRIES", "HOST:GPU:PID", "CHANGED")
-    print(header)
-    print("-" * len(header))
-
-    for row in rows:
-        # TODO(haeusser) remove fallback
-        if len(cols) == 6:
-            (id, cmd, stat, tries, host, changed) = row
-        else:
-            (id, cmd, stat, tries) = row
-            host = 'N/A'
-            changed = 'N/A'
-        host = host or ''
-        cmd = ('...' + cmd[-max_len_jobname:]) if len(cmd) > max_len_jobname else cmd
-        print(str_template.format(id, cmd, stat, tries, host, changed))
-    print("-" * len(header))
-
-    if print_status:
-        for s in ALL:
-            print("{:<3} {}".format(stats[s], s))
-    print()
 
 
 def start(args):
@@ -407,9 +409,6 @@ def remove(args):
     status(args)
 
 
-
-
-
 if __name__ == '__main__':
     options_parser = argparse.ArgumentParser(prog="Options", add_help=False)
     options_parser.add_argument("--db_name",
@@ -458,7 +457,7 @@ if __name__ == '__main__':
     sp.add_argument("--queued", help="Set all queued jobs to status 'hold'.", action='store_true')
     sp.set_defaults(func=hold)
 
-    sp = subparsers.add_parser("remove", help="Remove jobs by thir ID..", parents=[options_parser])
+    sp = subparsers.add_parser("remove", help="Remove jobs by their ID..", parents=[options_parser])
     sp.add_argument("remove_job_ids", help="One or more job IDs to remove, separated by spaces.", nargs='+')
     sp.set_defaults(func=remove)
 
