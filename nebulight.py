@@ -210,7 +210,8 @@ def add(args):
     job = args.job
     print('Adding', job)
     conn, c = _get_or_create_db(args.db_name)
-    _add_single_job(c, job, QUEUED)
+    status = HOLD if args.hold else QUEUED
+    _add_single_job(c, job, status)
     _commit_and_close(conn, c)
 
 
@@ -232,10 +233,12 @@ def add_list(args):
 
     assert len(lines) > 0, "No commands found."
 
+    status = HOLD if args.hold else QUEUED
+
     conn, c = _get_or_create_db(args.db_name)
     for job in lines:
         job = job.rstrip('\n')
-        _add_single_job(c, job, QUEUED)
+        _add_single_job(c, job, status)
     _commit_and_close(conn, c)
 
     print("Added", len(lines), "jobs.")
@@ -374,11 +377,13 @@ if __name__ == '__main__':
                                parents=[options_parser])
     sp.set_defaults(func=add)
     sp.add_argument('job', help='Command to execute.')
+    sp.add_argument('--hold', help='Add with status hold, rather than queued.', action='store_true')
 
     sp = subparsers.add_parser("add_list", help="Add a list of jobs (one per line) from a file to the queue.",
                                parents=[options_parser])
     sp.set_defaults(func=add_list)
     sp.add_argument('joblist', help='File containing commands to execute.')
+    sp.add_argument('--hold', help='Add with status hold, rather than queued.', action='store_true')
 
     sp = subparsers.add_parser("status", help="Print the current job status.", parents=[options_parser])
     sp.set_defaults(func=status)
