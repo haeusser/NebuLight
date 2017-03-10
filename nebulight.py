@@ -211,6 +211,9 @@ def _get_user_confirmation(query="Are you sure?"):
 def _print_table(cols, rows, print_status=True):
     max_len_jobname = 91
 
+    if len(rows) == 0:
+        return
+
     if print_status:
         stats = dict()
         for s in ALL:
@@ -390,8 +393,6 @@ def remove(args):
 
         select_by = 'status'
 
-    print("I will remove the following jobs. Currently running jobs will NOT be killed.")
-
     selector = "('" + "','".join(ids_to_remove) + "')"
 
     conn, c = _get_or_create_db(args.db_name)
@@ -399,9 +400,14 @@ def remove(args):
     c.execute('SELECT * FROM jobs WHERE {} IN {}'.format(select_by, selector))
     rows = c.fetchall()
 
+    if len(rows) == 0:
+        print("No jobs matched your criteria.")
+        return
+
     c.execute("PRAGMA table_info(jobs)")
     cols = c.fetchall()
 
+    print("I will remove the following jobs. Currently running jobs will NOT be killed.")
     _commit_and_close(conn, c)
 
     _print_table(cols, rows, print_status=False)
@@ -442,7 +448,7 @@ if __name__ == '__main__':
 
     sp = subparsers.add_parser("start", help="Start a worker instance locally.", parents=[options_parser])
     sp.add_argument('--max_idle_minutes', help='Maximum number of minutes to wait for new jobs before quitting.',
-                    default=120, type=int)
+                    default=180, type=int)
     sp.add_argument("--gpu", help="Set CUDA_VISIBLE_DEVICES environment variable before execution.")
     sp.add_argument("--max_failures", help="Maximum number of failures for job before it is abandoned.", default=3)
     sp.set_defaults(func=start)
