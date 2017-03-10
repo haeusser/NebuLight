@@ -379,9 +379,16 @@ def hold(args):
 def remove(args):
     ids_to_remove = args.remove_job_ids
 
+    select_by = 'job_id'
+
     if any(',' in x for x in ids_to_remove):
         print('Use blanks as separator, e.g.: nebulight remove 1 2 3.')
         return
+
+    if any(x in ALL for x in ids_to_remove):
+        print('Remove all jobs that are ', ' or '.join(ids_to_remove))
+
+        select_by = 'status'
 
     print("I will remove the following jobs. Currently running jobs will NOT be killed.")
 
@@ -389,7 +396,7 @@ def remove(args):
 
     conn, c = _get_or_create_db(args.db_name)
 
-    c.execute('SELECT * FROM jobs WHERE job_id IN {}'.format(selector))
+    c.execute('SELECT * FROM jobs WHERE {} IN {}'.format(select_by, selector))
     rows = c.fetchall()
 
     c.execute("PRAGMA table_info(jobs)")
@@ -402,7 +409,7 @@ def remove(args):
     if _get_user_confirmation():
         conn, c = _get_or_create_db(args.db_name)
 
-        c.execute('DELETE FROM jobs WHERE job_id IN {}'.format(selector))
+        c.execute('DELETE FROM jobs WHERE {} IN {}'.format(select_by, selector))
 
         _commit_and_close(conn, c)
 
@@ -458,7 +465,7 @@ if __name__ == '__main__':
     sp.set_defaults(func=hold)
 
     sp = subparsers.add_parser("remove", help="Remove jobs by their ID..", parents=[options_parser])
-    sp.add_argument("remove_job_ids", help="One or more job IDs to remove, separated by spaces.", nargs='+')
+    sp.add_argument("remove_job_ids", help="One or more job IDs to remove, separated by spaces. Or pass a status like 'done'.", nargs='+')
     sp.set_defaults(func=remove)
 
     argcomplete.autocomplete(parser)
