@@ -103,18 +103,20 @@ def _pull_and_process(args, gpu_id=''):
         _commit_and_close(conn, c)
         return
 
-    host = "{}:{}".format(_host(), gpu_id)
 
-    c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
-    update_str = _update_str(['status', 'tries', 'host'])
-    c.execute(update_str, (PROCESSING, tries + 1, host, id))
-    _commit_and_close(conn, c)
 
     print("Trying {}/{} of job #{}: {}".format(tries + 1, args.max_failures, id, cmd))
 
     rc = 1
     try:
         proc = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        host = "{}:{}:{}".format(_host(), gpu_id, proc.pid)
+        c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
+        update_str = _update_str(['status', 'tries', 'host'])
+        c.execute(update_str, (PROCESSING, tries + 1, host, id))
+        _commit_and_close(conn, c)
+
         while True:
             output = proc.stdout.readline()
             if output == '' and proc.poll() is not None:
@@ -273,7 +275,7 @@ def status(args):
     str_template = "{:<5}{:<" + str(len_cmd) + "}{:<13}{:<7}{:<" + str(len_host) + "}{:<11}"
 
     print()
-    header = str_template.format("ID", "COMMAND", "STATUS", "TRIES", "HOST", "CHANGED")
+    header = str_template.format("ID", "COMMAND", "STATUS", "TRIES", "HOST:GPU:PID", "CHANGED")
     print(header)
     print("-" * len(header))
 
@@ -383,7 +385,7 @@ if __name__ == '__main__':
 
     sp = subparsers.add_parser("start", help="Start a worker instance locally.", parents=[options_parser])
     sp.add_argument('--max_idle_minutes', help='Maximum number of minutes to wait for new jobs before quitting.',
-                    default=30, type=int)
+                    default=120, type=int)
     sp.add_argument("--gpu", help="Set CUDA_VISIBLE_DEVICES environment variable before execution.")
     sp.add_argument("--max_failures", help="Maximum number of failures for job before it is abandoned.", default=3)
     sp.set_defaults(func=start)
