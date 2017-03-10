@@ -44,7 +44,8 @@ def _time_str():
 
 
 def _add_single_job(cursor, cmd, status):
-    cursor.execute("insert into jobs(cmd, status, tries, host, time) values (?, ?, ?, ?, ?)", (cmd, status, 0, '', _time_str()))
+    cursor.execute("insert into jobs(cmd, status, tries, host, time) values (?, ?, ?, ?, ?)",
+                   (cmd, status, 0, '', _time_str()))
 
 
 def _get_or_create_db(db_name):
@@ -75,6 +76,7 @@ def _check_for_queued_jobs(db_name):
 def _host():
     return socket.gethostname()
 
+
 def _update_str(sets, where='job_id'):
     if not type(sets) == list:
         sets = [sets]
@@ -102,8 +104,6 @@ def _pull_and_process(args, gpu_id=''):
         c.execute(update_str, (FAILED, id))
         _commit_and_close(conn, c)
         return
-
-
 
     print("Trying {}/{} of job #{}: {}".format(tries + 1, args.max_failures, id, cmd))
 
@@ -163,11 +163,10 @@ def _change_status(args, mode):
 
     selector = "('" + "','".join(selector) + "')"
 
-    confirm = raw_input(
-        "Are you sure that you want to set the status of all {} jobs to {}? Enter 'yes': ".format(selector, mode))
-    if confirm.lower() == 'yes':
+    if _get_user_confirmation("Are you sure that you want to set the status of all {} jobs to {}?".format(selector, mode)):
         conn, c = _get_or_create_db(args.db_name)
-        sql_cmd = "UPDATE jobs SET status='{}', tries={}, time='{}' WHERE status IN {}".format(mode, 0, _time_str(), selector)
+        sql_cmd = "UPDATE jobs SET status='{}', tries={}, time='{}' WHERE status IN {}".format(mode, 0, _time_str(),
+                                                                                               selector)
         c.execute(sql_cmd)
         _commit_and_close(conn, c)
         print("All {} jobs set to {}.".format(selector, mode))
@@ -198,6 +197,14 @@ def _get_user_input(prompt, default, valid_values=None):
         else:
             sys.stdout.write("Invalid value.")
 
+
+def _get_user_confirmation(query="Are you sure?"):
+    confirm = 'no'
+    try:
+        confirm = raw_input(query + " Enter 'yes': ")
+    except KeyboardInterrupt:
+        print("\nNothing happened.")
+    return confirm.lower() == 'yes'
 
 def add(args):
     """
@@ -251,7 +258,6 @@ def status(args):
             db_name: A string containing a filename for the database.
     :return: Nothing.
     """
-    MAX_LEN_JOBNAME = 91
 
     if not os.path.exists(args.db_name):
         print("No job queue. Start by adding jobs.")
@@ -264,15 +270,23 @@ def status(args):
 
     c.execute("PRAGMA table_info(jobs)")
     cols = c.fetchall()
+    _commit_and_close(conn, c)
 
-    stats = dict()
-    for s in ALL:
-        stats[s] = sum(1 for x in rows if x[2] == s)
+    _print_table(cols, rows)
 
-    len_cmd = min(max(len(x[1]) for x in rows) + 5, MAX_LEN_JOBNAME + 6)
+
+def _print_table(cols, rows, print_status=True):
+    max_len_jobname = 91
+
+    if print_status:
+        stats = dict()
+        for s in ALL:
+            stats[s] = sum(1 for x in rows if x[2] == s)
+
+    len_cmd = min(max(len(x[1]) for x in rows) + 5, max_len_jobname + 6)
     # TODO(haeusser) remove fallback
     if len(cols) == 6:
-        len_host = min(max([4] + [len(x[4]) for x in rows]), MAX_LEN_JOBNAME + 6) + 2
+        len_host = min(max([4] + [len(x[4]) for x in rows]), max_len_jobname + 6) + 2
     else:
         len_host = 5
     str_template = "{:<5}{:<" + str(len_cmd) + "}{:<13}{:<7}{:<" + str(len_host) + "}{:<11}"
@@ -291,14 +305,14 @@ def status(args):
             host = 'N/A'
             changed = 'N/A'
         host = host or ''
-        cmd = ('...' + cmd[-MAX_LEN_JOBNAME:]) if len(cmd) > MAX_LEN_JOBNAME else cmd
+        cmd = ('...' + cmd[-max_len_jobname:]) if len(cmd) > max_len_jobname else cmd
         print(str_template.format(id, cmd, stat, tries, host, changed))
     print("-" * len(header))
-    for s in ALL:
-        print("{:<3} {}".format(stats[s], s))
-    print()
 
-    _commit_and_close(conn, c)
+    if print_status:
+        for s in ALL:
+            print("{:<3} {}".format(stats[s], s))
+    print()
 
 
 def start(args):
@@ -361,7 +375,39 @@ def hold(args):
 
 
 def remove(args):
-    _print_not_implemented()
+    ids_to_remove = args.remove_job_ids
+
+    if any(',' in x for x in ids_to_remove):
+        print('Use blanks as separator, e.g.: nebulight remove 1 2 3.')
+        return
+
+    print("I will remove the following jobs. Currently running jobs will NOT be killed.")
+
+    selector = "('" + "','".join(ids_to_remove) + "')"
+
+    conn, c = _get_or_create_db(args.db_name)
+
+    c.execute('SELECT * FROM jobs WHERE job_id IN {}'.format(selector))
+    rows = c.fetchall()
+
+    c.execute("PRAGMA table_info(jobs)")
+    cols = c.fetchall()
+
+    _commit_and_close(conn, c)
+
+    _print_table(cols, rows, print_status=False)
+
+    if _get_user_confirmation():
+        conn, c = _get_or_create_db(args.db_name)
+
+        c.execute('DELETE FROM jobs WHERE job_id IN {}'.format(selector))
+
+        _commit_and_close(conn, c)
+
+    status(args)
+
+
+
 
 
 if __name__ == '__main__':
@@ -395,9 +441,6 @@ if __name__ == '__main__':
     sp.add_argument("--max_failures", help="Maximum number of failures for job before it is abandoned.", default=3)
     sp.set_defaults(func=start)
 
-    sp = subparsers.add_parser("remove", help="Remove a specific job.", parents=[options_parser])
-    sp.set_defaults(func=remove)
-
     sp = subparsers.add_parser("queue", help="Set all jobs to 'queued'.", parents=[options_parser])
     sp.add_argument("--all", help="Re-enqueue all jobs to status 'queued'.", action='store_true')
     sp.add_argument("--done", help="Re-enqueue all done jobs to status 'queued'.", action='store_true')
@@ -415,8 +458,11 @@ if __name__ == '__main__':
     sp.add_argument("--queued", help="Set all queued jobs to status 'hold'.", action='store_true')
     sp.set_defaults(func=hold)
 
+    sp = subparsers.add_parser("remove", help="Remove jobs by thir ID..", parents=[options_parser])
+    sp.add_argument("remove_job_ids", help="One or more job IDs to remove, separated by spaces.", nargs='+')
+    sp.set_defaults(func=remove)
+
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
-    print('Executing stuff in', os.path.dirname(sys.argv[0]))
     args.func(args)
