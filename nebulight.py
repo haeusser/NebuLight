@@ -20,6 +20,7 @@ from __future__ import print_function
 import argparse
 import datetime
 import os
+import random
 import shlex
 import socket
 import sqlite3 as sql
@@ -88,10 +89,15 @@ def _update_str(sets, where='job_id'):
 
 
 def _pull_and_process(args, gpu_id=''):
+    delay = random.randrange(1, 10)
+    print("Add random delay of %d seconds to prevent job overlaps." % delay)
+    time.sleep(delay)
+
     conn, c = _get_or_create_db(args.db_name)
     c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
     try:
         (id, cmd, stat, tries, _, _) = c.fetchone()
+        _commit_and_close(conn, c)
     except Exception as e:
         print("Couldn't pull any new jobs." + e.message)
         _commit_and_close(conn, c)
@@ -105,7 +111,7 @@ def _pull_and_process(args, gpu_id=''):
         _commit_and_close(conn, c)
         return
 
-    print("Trying {}/{} of job #{}: {}".format(tries + 1, args.max_failures, id, cmd))
+    print("Try {}/{} of job #{}: {}".format(tries + 1, args.max_failures, id, cmd))
 
     rc = 1
     try:
@@ -471,7 +477,8 @@ if __name__ == '__main__':
     sp.set_defaults(func=hold)
 
     sp = subparsers.add_parser("remove", help="Remove jobs by their ID..", parents=[options_parser])
-    sp.add_argument("remove_job_ids", help="One or more job IDs to remove, separated by spaces. Or pass a status like 'done'.", nargs='+')
+    sp.add_argument("remove_job_ids",
+                    help="One or more job IDs to remove, separated by spaces. Or pass a status like 'done'.", nargs='+')
     sp.set_defaults(func=remove)
 
     argcomplete.autocomplete(parser)
