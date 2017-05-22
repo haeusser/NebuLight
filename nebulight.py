@@ -118,6 +118,7 @@ def _pull_and_process(args, gpu_id=''):
         proc = subprocess.Popen(shlex.split(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         host = "{}:{}:{}".format(_host(), gpu_id, proc.pid)
+        conn, c = _get_or_create_db(args.db_name)
         c.execute('SELECT * FROM jobs WHERE status=?', (QUEUED,))
         update_str = _update_str(['status', 'tries', 'host'])
         c.execute(update_str, (PROCESSING, tries + 1, host, id))
